@@ -1,76 +1,74 @@
-name: Build and Release
+name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [created]
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   build:
+    name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        target:
-          - x86_64-unknown-linux-gnu
-          - x86_64-pc-windows-msvc
-          - aarch64-apple-darwin
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact_ext: ''
+            asset_ext: ''
+
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact_ext: '.exe'
+            asset_ext: '.exe'
+
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact_ext: ''
+            asset_ext: ''
+
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            artifact_ext: ''
+            asset_ext: ''
 
     steps:
-      # Checkout the repository
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      # Set up Rust
-      - name: Set up Rust
+      - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           target: ${{ matrix.target }}
           override: true
 
-      # Build the project
-      - name: Build project
-        run: cargo build --release --target ${{ matrix.target }}
-
-      # Archive the binaries
-      - name: Archive binaries
+      - name: Get project name
+        id: get_project_name
         run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/* dist/
+          PROJECT_NAME=$(tomlq -r '.package.name' Cargo.toml)
+          echo "project_name=$PROJECT_NAME" >> $GITHUB_ENV
+          echo "project_name=$PROJECT_NAME" >> $GITHUB_OUTPUT
         shell: bash
-
-      # Upload artifacts
-      - name: Upload artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: ${{ matrix.target }}-binary
-          path: dist/
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v3
-        with:
-          path: dist/
-
-      - name: Create GitHub Release
-        uses: actions/create-release@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TOMLQ_VERSION: 0.19.0
+
+      - name: Build release binary
+        uses: actions-rs/cargo@v1
         with:
-          tag_name: ${{ github.ref_name }}
-          release_name: Release ${{ github.ref_name }}
-          draft: false
-          prerelease: false
-          files: |
-            dist/*
+          command: build
+          args: --release --target ${{ matrix.target }}
+
+      - name: Strip binary (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        run: strip target/${{ matrix.target }}/release/${{ env.project_name }}${{ matrix.artifact_ext }}
+
+      - name: Upload binary to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: target/${{ matrix.target }}/release/${{ env.project_name }}${{ matrix.artifact_ext }}
+          asset_name: ${{ env.project_name }}-${{ matrix.target }}${{ matrix.asset_ext }}
+          tag: ${{ github.ref }}    
