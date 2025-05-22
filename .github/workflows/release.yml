@@ -54,6 +54,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+ 
+      - name: Clean Rust build cache
+        run: cargo clean
 
       # 条件安装 Rust 工具链：原生平台直接安装，交叉编译平台不在这里安装
       - name: Install Rust toolchain (for native targets)
