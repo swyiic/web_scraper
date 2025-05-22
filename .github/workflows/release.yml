@@ -65,7 +65,7 @@ jobs:
       # 条件安装 Cross：仅在需要交叉编译时安装
       - name: Install Cross (for cross targets)
         if: ${{ matrix.use_cross }}
-        run: cargo install cross --git https://github.com/cross-rs/cross --tag v0.2.5 # 安装 cross 工具
+        run: cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Build Release Binary
         run: |
