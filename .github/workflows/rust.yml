@@ -1,53 +1,71 @@
-name: Cross-platform Build and Release
+name: Build and Release
 
 on:
+  push:
+    branches:
+      - main
   release:
     types: [published]
 
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        target:
-          - x86_64-unknown-linux-gnu
-          - aarch64-apple-darwin
-          - x86_64-pc-windows-msvc
+        os: [macos-latest, windows-latest, ubuntu-latest]
+        target: [x86_64-pc-windows-msvc, aarch64-apple-darwin, x86_64-unknown-linux-gnu]
+    runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+    - name: Checkout code
+      uses: actions/checkout@v3
 
-      - name: Set up Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: stable
+        target: ${{ matrix.target }}
+        override: true
 
-      - name: Install cross (for Linux target)
-        if: matrix.os == 'ubuntu-latest'
-        run: cargo install cross
+    - name: Install dependencies
+      run: rustup target add ${{ matrix.target }}
 
-      - name: Build release binary
-        run: |
-          if [ ${{ matrix.os }} == 'ubuntu-latest' ]; then
-            cross build --release --target ${{ matrix.target }};
-          else
-            cargo build --release --target ${{ matrix.target }};
-          fi
+    - name: Build project
+      run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package the binary
-        run: |
-          BINARY_NAME=$(basename $(find target/${{ matrix.target }}/release -type f -maxdepth 1 -executable))
-          OUTPUT_FILE="${{ github.event.release.tag_name }}-${{ matrix.target }}.tar.gz"
-          tar -czvf $OUTPUT_FILE -C target/${{ matrix.target }}/release $BINARY_NAME
+    - name: Package binary
+      run: |
+        mkdir -p dist
+        tar -czvf dist/${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release .
 
-      - name: Upload artifact
-        uses: actions/upload-release-asset@v1
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: ./${{ github.event.release.tag_name }}-${{ matrix.target }}.tar.gz
-          asset_name: ${{ github.event.release.tag_name }}-${{ matrix.target }}.tar.gz
-          asset_content_type: application/gzip
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: ${{ matrix.target }}-binary
+        path: dist/${{ matrix.target }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v3
+      with:
+        path: ./dist
+
+    - name: Create release
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          const artifacts = fs.readdirSync('./dist');
+          for (const artifact of artifacts) {
+            github.rest.repos.uploadReleaseAsset({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: context.payload.release.id,
+              name: path.basename(artifact),
+              data: fs.readFileSync(`./dist/${artifact}`)
+            });
+          }
