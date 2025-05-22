@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*' # 当有形如 v1.0.0, v1.0.0-rc1 等的 tag 被推送到仓库时触发
+
+permissions:
+  contents: write # 授予 workflow 写入权限，以便创建 release 和上传 assets
+
+jobs:
+  build_and_release:
+    name: Build for ${{ matrix.os }} and Release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_name_suffix: linux-x64
+            # 如果需要musl libc静态链接，可以使用 x86_64-unknown-linux-musl
+            # 或者使用 cross 工具：
+            # cross_target: x86_64-unknown-linux-musl
+            # cross_build_command: cross build --release --target x86_64-unknown-linux-musl
+
+          - os: macos-latest
+            target: x86_64-apple-darwin # Intel Mac
+            asset_name_suffix: macos-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin # Apple Silicon Mac
+            asset_name_suffix: macos-arm64
+
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_name_suffix: windows-x64
+            # 如果需要gnu toolchain，可以使用 x86_64-pc-windows-gnu
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain for ${{ matrix.target }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Get release version from tag
+        id: get_version
+        run: echo "RELEASE_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+
+      - name: Build Rust project
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Prepare artifact directory
+        id: prepare_artifact
+        run: |
+          ASSET_DIR_NAME="${{ github.event.repository.name }}-${{ env.RELEASE_VERSION }}-${{ matrix.asset_name_suffix }}"
+          mkdir -p "$ASSET_DIR_NAME"
+
+          # 复制可执行文件
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            cp target/${{ matrix.target }}/release/${{ github.event.repository.name }}.exe "$ASSET_DIR_NAME/"
+          else
+            cp target/${{ matrix.target }}/release/${{ github.event.repository.name }} "$ASSET_DIR_NAME/"
+          fi
+
+          # (可选) 复制其他文件，例如 README, LICENSE
+          cp README.md "$ASSET_DIR_NAME/" || true # 确保文件存在再复制
+          cp LICENSE "$ASSET_DIR_NAME/" || true
+
+          # 打包
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            7z a "$ASSET_DIR_NAME.zip" "$ASSET_DIR_NAME" # GitHub runner 默认有 7-Zip
+            echo "ASSET_PATH=${ASSET_DIR_NAME}.zip" >> $GITHUB_ENV
+          else
+            tar -czvf "$ASSET_DIR_NAME.tar.gz" "$ASSET_DIR_NAME"
+            echo "ASSET_PATH=${ASSET_DIR_NAME}.tar.gz" >> $GITHUB_ENV
+          fi
+        shell: bash
+
+      - name: Create Release (if not exists)
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          tag_name: ${{ github.ref }}
+          name: Release ${{ github.ref_name }}
+          draft: true # 建议先创建草稿 Release，手动检查后再发布
+          prerelease: false # 如果你的tag是预发布版本 (e.g., v1.0.0-rc1) 可以设置为 true
+          generate_release_notes: true # 自动生成 release notes
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ env.ASSET_PATH }}
+          asset_name: ${{ env.ASSET_PATH }}
