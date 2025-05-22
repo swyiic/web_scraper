@@ -3,103 +3,101 @@ name: Release Executables
 on:
   push:
     tags:
-      - 'v*.*.*' # 当你推送像 'v1.0.0' 这样的 Git Tag 时触发
-  workflow_dispatch: # 允许你手动点击 GitHub Actions 页面上的 'Run workflow' 按钮来运行
+      - 'v*.*.*'
+  workflow_dispatch: # 允许手动运行，但手动运行时不会创建 Release，只会构建
 
 permissions:
-  contents: write # 必须有写入权限才能创建 Release 和上传文件
+  contents: write # 必须有写入权限
 
 jobs:
   build_and_release:
-    name: Build on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Build ${{ matrix.os_label }} (${{ matrix.arch_label }})
+    runs-on: ${{ matrix.runner_os }}
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest # Linux (通用)
+          - runner_os: ubuntu-latest
             rust_target: x86_64-unknown-linux-gnu
-            asset_suffix: linux-x64
-            archive_format: tar.gz
+            os_label: Linux
+            arch_label: x64
+            archive_ext: tar.gz
+            exe_suffix: ""
 
-          - os: macos-latest # macOS (Intel)
+          - runner_os: macos-latest
             rust_target: x86_64-apple-darwin
-            asset_suffix: macos-x64
-            archive_format: tar.gz
+            os_label: macOS
+            arch_label: x64
+            archive_ext: tar.gz
+            exe_suffix: ""
 
-          - os: macos-latest # macOS (Apple Silicon M1/M2)
+          - runner_os: macos-latest
             rust_target: aarch64-apple-darwin
-            asset_suffix: macos-arm64
-            archive_format: tar.gz
+            os_label: macOS
+            arch_label: arm64
+            archive_ext: tar.gz
+            exe_suffix: ""
 
-          - os: windows-latest # Windows
+          - runner_os: windows-latest
             rust_target: x86_64-pc-windows-msvc
-            asset_suffix: windows-x64
-            archive_format: zip
+            os_label: Windows
+            arch_label: x64
+            archive_ext: zip
+            exe_suffix: ".exe" # Windows 可执行文件有 .exe 后缀
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain for ${{ matrix.rust_target }}
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          target: ${{ matrix.rust_target }} # 安装特定平台的 Rust 编译工具链
+          target: ${{ matrix.rust_target }}
 
-      - name: Get release version from tag
-        id: get_version
-        run: echo "RELEASE_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-
-      - name: Build Rust project (Release mode)
+      - name: Build Release Binary
         run: cargo build --release --target ${{ matrix.rust_target }}
 
-      - name: Prepare artifact directory and package
+      - name: Package Artifact
         id: package_artifact
         shell: bash
         run: |
-          # 获取你的 Rust 项目的可执行文件名 (默认为 Cargo.toml 中的 package name)
-          PROJECT_NAME=$(basename $(pwd))
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            EXECUTABLE_NAME="${PROJECT_NAME}.exe"
+          APP_NAME=$(basename $(pwd)) # 获取项目名称
+          RELEASE_VERSION=${GITHUB_REF#refs/tags/} # 从tag中获取版本号
+
+          # 构建输出文件夹和文件名
+          ARTIFACT_DIR="${APP_NAME}-${RELEASE_VERSION}-${{ matrix.os_label }}-${{ matrix.arch_label }}"
+          mkdir -p "$ARTIFACT_DIR"
+
+          # 复制可执行文件
+          cp target/${{ matrix.rust_target }}/release/${APP_NAME}${{ matrix.exe_suffix }} "$ARTIFACT_DIR/"
+
+          # (可选) 复制 README 和 LICENSE
+          cp README.md "$ARTIFACT_DIR/" || true
+          cp LICENSE "$ARTIFACT_DIR/" || true
+
+          # 打包
+          ARCHIVE_NAME="${ARTIFACT_DIR}.${{ matrix.archive_ext }}"
+          if [[ "${{ matrix.archive_ext }}" == "zip" ]]; then
+            zip -r "$ARCHIVE_NAME" "$ARTIFACT_DIR"
           else
-            EXECUTABLE_NAME="${PROJECT_NAME}"
+            tar -czvf "$ARCHIVE_NAME" "$ARTIFACT_DIR"
           fi
+          echo "ASSET_PATH=$ARCHIVE_NAME" >> $GITHUB_ENV # 存储打包后的文件路径
 
-          # 构建打包后的文件夹名
-          ASSET_DIR_NAME="${PROJECT_NAME}-${{ env.RELEASE_VERSION }}-${{ matrix.asset_suffix }}"
-          mkdir -p "$ASSET_DIR_NAME"
-
-          # 复制编译好的可执行文件到新目录
-          cp target/${{ matrix.rust_target }}/release/${EXECUTABLE_NAME} "$ASSET_DIR_NAME/"
-
-          # (可选) 复制 README 和 LICENSE 文件，如果没有这些文件则忽略错误
-          cp README.md "$ASSET_DIR_NAME/" || true
-          cp LICENSE "$ASSET_DIR_NAME/" || true
-
-          # 根据系统打包
-          if [[ "${{ matrix.archive_format }}" == "zip" ]]; then
-            zip -r "${ASSET_DIR_NAME}.zip" "$ASSET_DIR_NAME"
-            echo "ASSET_FILE_NAME=${ASSET_DIR_NAME}.zip" >> $GITHUB_ENV
-          else
-            tar -czvf "${ASSET_DIR_NAME}.tar.gz" "$ASSET_DIR_NAME"
-            echo "ASSET_FILE_NAME=${ASSET_DIR_NAME}.tar.gz" >> $GITHUB_ENV
-          fi
-
-      - name: Create or Update GitHub Release
+      - name: Create GitHub Release (only on tag push)
         id: create_release
+        # 这一步只在 tag 触发时执行，否则会跳过，导致 upload_url 不存在
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/') # 仅当是 tag 触发时才创建 Release
         with:
           tag_name: ${{ github.ref }}
           name: Release ${{ github.ref_name }}
-          draft: true # 先作为草稿发布，你可以手动检查后再正式发布
+          draft: true
           prerelease: false
-          generate_release_notes: true # 自动根据 Git 提交记录生成 Release Notes
+          generate_release_notes: true
 
       - name: Upload Release Asset
+        if: startsWith(github.ref, 'refs/tags/') && steps.create_release.outputs.upload_url # 确保 release 创建成功才尝试上传
         uses: actions/upload-release-asset@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 这是 GitHub 自动提供的 token
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }} # 上传到前面创建的 Release
-          asset_path: ${{ env.ASSET_FILE_NAME }} # 要上传的文件路径
-          asset_name: ${{ env.ASSET_FILE_NAME }} # 上传后显示的文件名
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ env.ASSET_PATH }}
+          asset_name: ${{ env.ASSET_PATH }} # 文件名与路径相同
