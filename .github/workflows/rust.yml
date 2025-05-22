@@ -4,10 +4,10 @@ on:
   push:
     tags:
       - 'v*.*.*'
-  workflow_dispatch:
+  workflow_dispatch: # 允许手动运行（但手动运行时不会创建 Release）
 
 permissions:
-  contents: write
+  contents: write # 必须有写入权限
 
 jobs:
   build_and_release:
